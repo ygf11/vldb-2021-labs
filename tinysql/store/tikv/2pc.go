@@ -20,10 +20,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pingcap-incubator/tinykv/proto/pkg/kvrpcpb"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/kvrpcpb"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/failpoint"
 	"github.com/pingcap/tidb/kv"
+	"github.com/pingcap/tidb/parser/terror"
 	"github.com/pingcap/tidb/store/tikv/tikvrpc"
 	"github.com/pingcap/tidb/tablecodec"
 	"github.com/pingcap/tidb/util/logutil"
@@ -132,15 +134,35 @@ func (c *twoPhaseCommitter) initKeysAndMutations() error {
 		if len(v) > 0 {
 			// `len(v) > 0` means it's a put operation.
 			// YOUR CODE HERE (lab3).
-			panic("YOUR CODE HERE")
+			// panic("YOUR CODE HERE")
+			mutations[string(k)] = &mutationEx{
+				pb.Mutation{
+					Op:    kvrpcpb.Op_Put,
+					Key:   k,
+					Value: v,
+				},
+			}
+
+			putCnt += 1
 		} else {
 			// `len(v) == 0` means it's a delete operation.
 			// YOUR CODE HERE (lab3).
-			panic("YOUR CODE HERE")
+			// panic("YOUR CODE HERE")
+			mutations[string(k)] = &mutationEx{
+				pb.Mutation{
+					Op:  kvrpcpb.Op_Del,
+					Key: k,
+				},
+			}
+
+			delCnt += 1
 		}
 		// Update the keys array and statistic information
 		// YOUR CODE HERE (lab3).
-		panic("YOUR CODE HERE")
+		// panic("YOUR CODE HERE")
+		lockCnt += 1
+		size += len(k) + len(v)
+		keys = append(keys, k)
 		return nil
 	})
 	if err != nil {
@@ -154,7 +176,17 @@ func (c *twoPhaseCommitter) initKeysAndMutations() error {
 		// YOUR CODE HERE (lab3).
 		_, ok := mutations[string(lockKey)]
 		if !ok {
-			panic("YOUR CODE HERE")
+			// panic("YOUR CODE HERE")
+			mutations[string(lockKey)] = &mutationEx{
+				pb.Mutation{
+					Op:  kvrpcpb.Op_Lock,
+					Key: lockKey,
+				},
+			}
+
+			size += len(lockKey)
+			keys = append(keys, lockKey)
+			lockCnt += 1
 		}
 	}
 	if len(keys) == 0 {
@@ -190,6 +222,7 @@ func (c *twoPhaseCommitter) initKeysAndMutations() error {
 	}
 
 	c.keys = keys
+	c.primaryKey = keys[0]
 	c.mutations = mutations
 	c.lockTTL = txnLockTTL(txn.startTime, size)
 	return nil
@@ -344,8 +377,49 @@ func (c *twoPhaseCommitter) buildPrewriteRequest(batch batchKeys) *tikvrpc.Reque
 	// Build the prewrite request from the input batch,
 	// should use `twoPhaseCommitter.primary` to ensure that the primary key is not empty.
 	// YOUR CODE HERE (lab3).
-	panic("YOUR CODE HERE")
+	// panic("YOUR CODE HERE")
+	mutations := make([]*pb.Mutation, 0, len(batch.keys))
+	kvs := c.mutations
+	for _, key := range batch.keys {
+		mutation := &kvrpcpb.Mutation{
+			Op:    kvrpcpb.Op_Put,
+			Key:   []byte(key),
+			Value: kvs[string(key)].Value,
+		}
+
+		mutations = append(mutations, mutation)
+	}
+
+	req = &pb.PrewriteRequest{
+		Mutations:    mutations,
+		PrimaryLock:  c.primaryKey,
+		StartVersion: c.startTS,
+		LockTtl:      c.lockTTL,
+	}
+
 	return tikvrpc.NewRequest(tikvrpc.CmdPrewrite, req, pb.Context{})
+}
+
+func (c *twoPhaseCommitter) buildCommitRequest(batch batchKeys) *tikvrpc.Request {
+	var req *pb.CommitRequest
+
+	req = &pb.CommitRequest{
+		StartVersion:  c.startTS,
+		Keys:          batch.keys,
+		CommitVersion: c.commitTS,
+	}
+
+	return tikvrpc.NewRequest(tikvrpc.CmdCommit, req, pb.Context{})
+}
+
+func (c *twoPhaseCommitter) buildCleanUpRequest(batch batchKeys) *tikvrpc.Request {
+	var req *pb.BatchRollbackRequest
+
+	req = &pb.BatchRollbackRequest{
+		StartVersion: c.startTS,
+		Keys:         batch.keys,
+	}
+	return tikvrpc.NewRequest(tikvrpc.CmdBatchRollback, req, pb.Context{})
 }
 
 // handleSingleBatch prewrites a batch of keys
@@ -429,7 +503,10 @@ func (actionCommit) handleSingleBatch(c *twoPhaseCommitter, bo *Backoffer, batch
 	sender := NewRegionRequestSender(c.store.regionCache, c.store.client)
 	// build and send the commit request
 	// YOUR CODE HERE (lab3).
-	panic("YOUR CODE HERE")
+	// panic("YOUR CODE HERE")
+	req := c.buildCommitRequest(batch)
+	resp, err = sender.SendReq(bo, req, batch.region, readTimeoutShort)
+
 	logutil.BgLogger().Debug("actionCommit handleSingleBatch", zap.Bool("nil response", resp == nil))
 
 	// If we fail to receive response for the request that commits primary key, it will be undetermined whether this
@@ -453,7 +530,29 @@ func (actionCommit) handleSingleBatch(c *twoPhaseCommitter, bo *Backoffer, batch
 
 	// handle the response and error refer to actionPrewrite.handleSingleBatch
 	// YOUR CODE HERE (lab3).
-	panic("YOUR CODE HERE")
+	// panic("YOUR CODE HERE")
+	regionErr, err := resp.GetRegionError()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	if regionErr != nil {
+		// The region info is read from region cache,
+		// so the cache miss cases should be considered
+		// You need to handle region errors here
+		err = bo.Backoff(BoRegionMiss, errors.New(regionErr.String()))
+		if err != nil {
+			return errors.Trace(err)
+		}
+		// re-split keys and prewrite again.
+		err = c.commitKeys(bo, batch.keys)
+		return errors.Trace(err)
+	}
+	commitResp := resp.Resp.(*pb.CommitResponse)
+	keyErr := commitResp.GetError()
+	if keyErr != nil {
+		err = extractKeyErr(keyErr)
+		return err
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -465,14 +564,47 @@ func (actionCommit) handleSingleBatch(c *twoPhaseCommitter, bo *Backoffer, batch
 
 func (actionCleanup) handleSingleBatch(c *twoPhaseCommitter, bo *Backoffer, batch batchKeys) error {
 	// follow actionPrewrite.handleSingleBatch, build the rollback request
+	req := c.buildCleanUpRequest(batch)
 
 	// build and send the rollback request
 	// YOUR CODE HERE (lab3).
-	panic("YOUR CODE HERE")
+	// panic("YOUR CODE HERE")
+	var resp *tikvrpc.Response
+	var err error
+	resp, err = c.store.SendReq(bo, req, batch.region, readTimeoutShort)
 
 	// handle the response and error refer to actionPrewrite.handleSingleBatch
 	// YOUR CODE HERE (lab3).
-	panic("YOUR CODE HERE")
+	// panic("YOUR CODE HERE")
+	if err != nil {
+		return errors.Trace(err)
+	}
+	regionErr, err := resp.GetRegionError()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	if regionErr != nil {
+		// The region info is read from region cache,
+		// so the cache miss cases should be considered
+		// You need to handle region errors here
+		err = bo.Backoff(BoRegionMiss, errors.New(regionErr.String()))
+		if err != nil {
+			return errors.Trace(err)
+		}
+		// re-split keys and prewrite again.
+		err = c.cleanupKeys(bo, batch.keys)
+		return errors.Trace(err)
+	}
+	if resp.Resp == nil {
+		return errors.Trace(ErrBodyMissing)
+	}
+
+	rollbackResp := resp.Resp.(*pb.BatchRollbackResponse)
+	keyErr := rollbackResp.GetError()
+	if keyErr != nil {
+		// fmt.Printf("clean phase key error, %v\n", keyErr)
+		return nil
+	}
 	return nil
 }
 
@@ -518,7 +650,8 @@ func (c *twoPhaseCommitter) execute(ctx context.Context) (err error) {
 				logutil.BgLogger().Debug("cleanupBo", zap.Bool("nil", cleanupBo == nil))
 				// cleanup phase
 				// YOUR CODE HERE (lab3).
-				panic("YOUR CODE HERE")
+				// panic("YOUR CODE HERE")
+				c.cleanupKeys(cleanupBo, c.keys)
 				c.cleanWg.Done()
 			}()
 		}
@@ -529,7 +662,11 @@ func (c *twoPhaseCommitter) execute(ctx context.Context) (err error) {
 	prewriteBo := NewBackoffer(ctx, PrewriteMaxBackoff).WithVars(c.txn.vars)
 	logutil.BgLogger().Debug("prewriteBo", zap.Bool("nil", prewriteBo == nil))
 	// YOUR CODE HERE (lab3).
-	panic("YOUR CODE HERE")
+	// panic("YOUR CODE HERE")
+	err1 := c.prewriteKeys(prewriteBo, c.keys)
+	if err1 != nil {
+		return errors.Trace(err1)
+	}
 
 	// commit phase
 	commitTS, err := c.store.getTimestampWithRetry(NewBackoffer(ctx, tsoMaxBackoff).WithVars(c.txn.vars))
@@ -564,7 +701,15 @@ func (c *twoPhaseCommitter) execute(ctx context.Context) (err error) {
 	// If there is an error returned by commit operation, you should check if there is an undetermined error before return it.
 	// Undetermined error should be returned if exists, and the database connection will be closed.
 	// YOUR CODE HERE (lab3).
-	panic("YOUR CODE HERE")
+	// panic("YOUR CODE HERE")
+	err2 := c.commitKeys(commitBo, c.keys)
+	if err2 != nil {
+		// fmt.Printf("commit error:%v\n", err2)
+		if undeterminedErr := c.getUndeterminedErr(); undeterminedErr != nil {
+			return errors.Trace(terror.ErrResultUndetermined)
+		}
+		return errors.Trace(err2)
+	}
 	return nil
 }
 

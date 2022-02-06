@@ -466,6 +466,7 @@ func (c *RPCClient) SendRequest(ctx context.Context, addr string, req *tikvrpc.R
 				failpoint.Return(nil, undeterminedErr)
 			}
 		})
+
 	case tikvrpc.CmdCheckTxnStatus:
 		r := req.CheckTxnStatus()
 		if err := handler.checkRequest(reqCtx, r.Size()); err != nil {
