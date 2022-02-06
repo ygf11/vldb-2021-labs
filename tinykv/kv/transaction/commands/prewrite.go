@@ -2,6 +2,7 @@ package commands
 
 import (
 	"encoding/hex"
+	"fmt"
 
 	"github.com/pingcap-incubator/tinykv/kv/transaction/mvcc"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/kvrpcpb"
@@ -70,17 +71,67 @@ func (p *Prewrite) prewriteMutation(txn *mvcc.MvccTxn, mut *kvrpcpb.Mutation) (*
 	// Hint: Check the interafaces provided by `mvcc.MvccTxn`. The error type `kvrpcpb.WriteConflict` is used
 	//		 denote to write conflict error, try to set error information properly in the `kvrpcpb.KeyError`
 	//		 response.
-	panic("prewriteMutation is not implemented yet")
+	// panic("prewriteMutation is not implemented yet")
+	// 比我们之前的事务是否有提交成功
+	_, write_ts, err := txn.MostRecentWrite(key)
+	if err != nil {
+		return nil, err
+	}
+
+	if write_ts > txn.StartTS {
+		err := &kvrpcpb.KeyError{Conflict: &kvrpcpb.WriteConflict{StartTs: txn.StartTS, ConflictTs: 1, Key: key, Primary: p.request.PrimaryLock}}
+
+		return err, nil
+	}
+
+	// 当前事务是否已经回滚/提交
+	existingWrite, _, err := txn.CurrentWrite(key)
+	if err != nil {
+		return nil, err
+	}
+
+	if existingWrite != nil && existingWrite.Kind == mvcc.WriteKindRollback {
+		keyError := &kvrpcpb.KeyError{Abort: fmt.Sprintf("rollback record is setted, primary key:%v", key)}
+		return keyError, nil
+	}
+
+	if existingWrite != nil && (existingWrite.Kind == mvcc.WriteKindDelete ||
+		existingWrite.Kind == mvcc.WriteKindPut) {
+		keyError := &kvrpcpb.KeyError{Abort: fmt.Sprintf("txn is commited, primary key:%v", key)}
+		return keyError, nil
+	}
 
 	// YOUR CODE HERE (lab2).
 	// Check if key is locked. Report key is locked error if lock does exist, note the key could be locked
 	// by this transaction already and the current prewrite request is stale.
-	panic("check lock in prewrite is not implemented yet")
+	// panic("check lock in prewrite is not implemented yet")
+	locked, err := txn.GetLock(key)
+	if locked != nil {
+		// not current transaction
+		if locked.Ts != txn.StartTS {
+			return &kvrpcpb.KeyError{
+				Locked: locked.Info(key),
+			}, nil
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
 
 	// YOUR CODE HERE (lab2).
 	// Write a lock and value.
 	// Hint: Check the interfaces provided by `mvccTxn.Txn`.
-	panic("lock record generation is not implemented yet")
+	// panic("lock record generation is not implemented yet")
+	lock := &mvcc.Lock{
+		Primary: p.request.PrimaryLock,
+		Ts:      txn.StartTS,
+		Ttl:     p.request.LockTtl,
+		Kind:    mvcc.WriteKindPut,
+	}
+
+	txn.PutLock(key, lock)
+	txn.PutValue(key, mut.Value)
 
 	return nil, nil
 }
