@@ -21,6 +21,7 @@ import (
 	"sync"
 
 	"github.com/pingcap-incubator/tinykv/proto/pkg/kvrpcpb"
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/kvrpcpb"
 	pd "github.com/pingcap-incubator/tinykv/scheduler/client"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/store/tikv/tikvrpc"
@@ -299,7 +300,8 @@ func (lr *LockResolver) getTxnStatus(bo *Backoffer, txnID uint64, primary []byte
 	var req *tikvrpc.Request
 	// build the request
 	// YOUR CODE HERE (lab3).
-	panic("YOUR CODE HERE")
+	// panic("YOUR CODE HERE")
+	req = lr.buildCheckTxnStatusRequest(primary, txnID, currentTS)
 	for {
 		loc, err := lr.store.GetRegionCache().LocateKey(bo, primary)
 		if err != nil {
@@ -327,7 +329,12 @@ func (lr *LockResolver) getTxnStatus(bo *Backoffer, txnID uint64, primary []byte
 		logutil.BgLogger().Debug("cmdResp", zap.Bool("nil", cmdResp == nil))
 		// Assign status with response
 		// YOUR CODE HERE (lab3).
-		panic("YOUR CODE HERE")
+		// panic("YOUR CODE HERE")
+		status = TxnStatus{
+			ttl:      cmdResp.LockTtl,
+			commitTS: cmdResp.CommitVersion,
+			action:   cmdResp.Action,
+		}
 		return status, nil
 	}
 }
@@ -350,8 +357,8 @@ func (lr *LockResolver) resolveLock(bo *Backoffer, l *Lock, status TxnStatus, cl
 
 		// build the request
 		// YOUR CODE HERE (lab3).
-		panic("YOUR CODE HERE")
-
+		// panic("YOUR CODE HERE")
+		req = lr.buildResolveLockRequest(l.TxnID, status.commitTS)
 		resp, err := lr.store.SendReq(bo, req, loc.Region, readTimeoutShort)
 		if err != nil {
 			return errors.Trace(err)
@@ -381,4 +388,26 @@ func (lr *LockResolver) resolveLock(bo *Backoffer, l *Lock, status TxnStatus, cl
 		}
 		return nil
 	}
+}
+func (lr *LockResolver) buildCheckTxnStatusRequest(primary []byte, lockTs, currentTS uint64) *tikvrpc.Request {
+	var req *pb.CheckTxnStatusRequest
+
+	req = &pb.CheckTxnStatusRequest{
+		PrimaryKey: primary,
+		LockTs:     lockTs,
+		CurrentTs:  currentTS,
+	}
+
+	return tikvrpc.NewRequest(tikvrpc.CmdCheckTxnStatus, req, pb.Context{})
+}
+
+func (lr *LockResolver) buildResolveLockRequest(startTs, commitTs uint64) *tikvrpc.Request {
+	var req *pb.ResolveLockRequest
+
+	req = &pb.ResolveLockRequest{
+		StartVersion:  startTs,
+		CommitVersion: commitTs,
+	}
+
+	return tikvrpc.NewRequest(tikvrpc.CmdResolveLock, req, pb.Context{})
 }

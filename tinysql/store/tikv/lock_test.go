@@ -65,6 +65,9 @@ func (s *testLockSuite) lockKey(c *C, key, value, primaryKey, primaryValue []byt
 		tpc.keys = [][]byte{primaryKey, key}
 	}
 
+	// set here
+	tpc.primaryKey = primaryKey
+
 	ctx := context.Background()
 	err = tpc.prewriteKeys(NewBackoffer(ctx, PrewriteMaxBackoff), tpc.keys)
 	c.Assert(err, IsNil)
