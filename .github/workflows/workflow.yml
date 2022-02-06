@@ -35,7 +35,7 @@ jobs:
         working-directory: ./tinykv
         run: |
           make lab1P0
-          make lab1Pa
+          make lab1P1a
           make lab1P1b
           make lab1P2a
           make lab1P2b
