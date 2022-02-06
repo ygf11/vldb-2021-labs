@@ -1,0 +1,95 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Set up Go
+        uses: actions/setup-go@v2
+        with:
+          go-version: 1.17
+
+      - name: tinykv Build
+        working-directory: ./tinykv
+        run: make default
+
+      - name: tinysql Build
+        working-directory: ./tinysql
+        run: make default
+  lab1-test:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Set up Go
+        uses: actions/setup-go@v2
+        with:
+          go-version: 1.17
+
+      - name: lab1 Test
+        working-directory: ./tinykv
+        run: |
+          make lab1P0
+          make lab1Pa
+          make lab1P1b
+          make lab1P2a
+          make lab1P2b
+          make lab1P3a
+          make lab1P3b
+          make lab1P4a
+          make lab1P4b
+  lab2-test:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Set up Go
+        uses: actions/setup-go@v2
+        with:
+          go-version: 1.17
+
+      - name: lab2 Test
+        working-directory: ./tinykv
+        run: |
+          make lab2P1
+          make lab2P2
+          make lab2P3
+          make lab2P4    
+  lab3-test:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Set up Go
+        uses: actions/setup-go@v2
+        with:
+          go-version: 1.17
+
+      - name: lab3 Test
+        working-directory: ./tinysql
+        run: make lab3 
+  lab4-test:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Set up Go
+        uses: actions/setup-go@v2
+        with:
+          go-version: 1.17
+
+      - name: lab4 Test
+        working-directory: ./tinysql
+        run: |
+          make lab4a
+          make lab4b              
+          make lab4c
+          
